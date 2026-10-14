@@ -42,7 +42,7 @@ Whistles often show narrow moving ridges; several people may produce overlapping
 
 The API and framing choices follow the [librosa STFT documentation](https://librosa.org/doc/0.11.0/generated/librosa.stft.html); the conversion follows [librosa amplitude_to_db](https://librosa.org/doc/0.11.0/generated/librosa.amplitude_to_db.html).
 
-## Stochastic processes and planned methods
+## Stochastic processes and implemented methods
 
 Treat spectator contributions as realizations of random, time-varying processes. Independent source summation may reduce fine-scale coherence, but independence is a modeling assumption: chants and responses to play synchronize crowds. Stadium sound is usually nonstationary. For a wide-sense stationary process, mean is constant and covariance depends only on lag; within short intervals, approximate stationarity can make estimates useful. Do not assume it across entire matches.
 
@@ -61,7 +61,7 @@ S_x(f)=\frac1{f_s}\sum_{\ell=-\infty}^{\infty}R_x[\ell]
 
 This is the two-sided density convention, with units of digital-amplitude squared per Hz. Its integral over one Nyquist interval equals variance. Estimates from finite, nonstationary recordings have uncertainty; overlapping observations are correlated.
 
-### Welch PSD (next increment)
+### Welch PSD
 
 Average windowed periodograms over M frames:
 
@@ -69,19 +69,43 @@ Average windowed periodograms over M frames:
 \hat S(f_k)=\frac1M\sum_m\frac{|X[m,k]|^2}{f_s\sum_n w[n]^2},
 \]
 
-with interior positive-frequency bins doubled for a one-sided real-signal PSD. This normalization differs from the spectrogram amplitude normalization. Averaging reduces variability relative to an individual periodogram, at a cost in frequency resolution and temporal information. Overlap means M is not the count of independent observations. PSD can quantify tonal concentration, broadband content and narrow peaks; it does not locate repetition or identify its source. Compare similar match events and microphone/feed conditions. Implementation will use [SciPy Welch](https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.welch.html).
+with interior positive-frequency bins doubled for a one-sided real-signal PSD. This normalization differs from the spectrogram amplitude normalization. Averaging reduces variability relative to an individual periodogram, at a cost in frequency resolution and temporal information. Overlap means M is not the count of independent observations. PSD can quantify tonal concentration, broadband content and narrow peaks; it does not locate repetition or identify its source. Compare similar match events and microphone/feed conditions. The implementation uses [SciPy Welch](https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.welch.html).
 
-### Autocorrelation (later increment)
+### Autocorrelation
 
 Estimate similarity of a mean-centered signal to its delayed version. Normalize by the energies of the overlapping portions, require a substantial overlap, and report lag in seconds. A loop of duration T can produce peaks near T, 2T, etc., despite additive noise. Short-lag peaks are also expected for any tonal whistle: a 2 kHz sinusoid repeats every 0.5 ms. These oscillations are not evidence of a repeated recording. Analyze multi-second structure, envelopes, and spectral trajectories, with locally detrended signals and explicit lag ranges.
 
-### Cross-correlation (later increment)
+The implementation returns nonnegative lags and retains zero as a reference. CLI peak reporting excludes lags below 0.05 seconds by default; the plot still contains them. Set `--min-peak-lag` to a scientifically chosen range (for example 0.2 seconds when investigating multi-second loops). The reported maximum is the largest **absolute** coefficient, so polarity inversion remains visible. It is not a list of independently significant peaks. Silence or constant overlaps produce NaN, with no reported maximum.
+
+### Cross-correlation
 
 For candidate segments x and y, compute a lag-dependent normalized inner product of their overlapping, mean-centered samples. This can estimate delay and reveal detailed waveform reuse. Gains are handled by normalization, but compression, reverberation, microphone position, resampling and timing drift can destroy waveform agreement. Broadcasts of the same live event naturally correlate. Compare nonoverlapping moments or distinct matches and exclude shared feeds/edits before interpreting reuse. Define lag sign, minimum overlap, and uncertainty explicitly.
 
-### Repeated spectral patterns (later increment)
+For each integer lag l, compare overlapping vectors u=x[n] and v=y[n+l]. Positive lag means matching content appears later in the **second segment**. Source start offsets are excluded: corresponding source timestamps differ by `second.start_seconds - first.start_seconds + lag_seconds`. Reversing the inputs reverses the lag sign. Both signals must have the same sample rate; the loader can resample explicitly.
+
+The actual coefficient is the Pearson correlation of the overlap:
+
+\[
+\rho[l]=\frac{\sum uv-(\sum u)(\sum v)/M}
+ {\sqrt{[\sum u^2-(\sum u)^2/M][\sum v^2-(\sum v)^2/M]}},
+\]
+
+where M is the number of paired samples at that lag. The numerator's raw product sum uses [SciPy FFT correlation](https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.correlate.html); overlap sums and squared sums use cumulative sums. A global centering/scaling step improves numerical stability, but the overlap-specific formula defines the statistic. Require at least `--min-overlap` seconds (default 1, and at least two samples), bound `--max-lag`, and retain the overlap count in the result. Undefined low-variance overlaps are NaN. This normalized coefficient is a similarity measure, not the autocovariance whose Fourier transform is PSD; do not Fourier-transform these overlap-normalized coefficients to estimate power.
+
+### Repeated spectral patterns
 
 Construct time-frequency feature vectors from log magnitudes within a specified band and compare windows of several seconds using normalized similarity. A self-similarity matrix can reveal offset diagonals from recurrent sequences. Local whitening or feature normalization helps reduce stationary tonal backgrounds, but can hide meaningful level differences; retain the original measurements. Search at a common sample rate and hop. Exclude the near-zero-lag diagonal and heavily overlapping windows. Constrain any time-warp alignment: excessive flexibility can match unrelated sound.
+
+The implemented search uses a band-limited log-amplitude matrix, floored at 60 dB below its peak by default. Remove the mean across frequencies in each frame to reduce uniform gain differences, then remove each frequency bin's temporal mean to suppress stationary spectral backgrounds. For resulting feature vectors F[t], compare aligned W-frame sequences starting at i and j:
+
+\[
+C[i,j]=\frac{\sum_{q=0}^{W-1}F[i+q]^T F[j+q]}
+{\sqrt{\sum_q\|F[i+q]\|^2\sum_q\|F[j+q]\|^2}}.
+\]
+
+This is cosine similarity of flattened sequences, not a probability. It uses no time warping. The window span is `(W-1)*hop + n_fft` samples; choose the smallest W covering the requested duration, and save the actual duration. Exclude any pair whose underlying STFT sample support overlaps, plus a configurable minimum gap. Constant/silent features and very low-energy windows are undefined. Removing spectral backgrounds can also remove real evidence of unchanging playback; a negative result cannot rule it out. Similarity depends on the analyzed interval because background centering uses that interval.
+
+The matrix is symmetric, with excluded pairs left as NaN. Thresholded candidates are ranked by score; suppress alignments whose two starts are both within half a window of an already reported pair. A default 0.8 threshold is exploratory and uncalibrated. Save all valid pair scores so controls and alternative thresholds can be evaluated. The default 2000-frame limit bounds quadratic work/storage (two 2000² float64 matrices use about 64 MB before other arrays); shorten long intervals or increase hop size. No frames are silently removed.
 
 ## Evidence and validation
 
