@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stadium-audio-analysis"
+version = "0.1.0"
+description = "Exploratory analysis of stadium audio recordings"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24,<3",
+  "scipy>=1.11,<2",
+  "matplotlib>=3.7,<4",
+  "librosa>=0.11,<0.12",
+  "soundfile>=0.12,<0.14",
+]
+
+[project.optional-dependencies]
+video = ["imageio-ffmpeg>=0.6,<0.7"]
+
+[dependency-groups]
+dev = ["pytest>=8,<10"]
+
+[project.scripts]
+stadium-audio = "stadium_audio.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
